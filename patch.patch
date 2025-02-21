@@ -1,0 +1,329 @@
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+new file mode 100644
+index 0000000..484ddf9
+--- /dev/null
++++ b/pnpm-lock.yaml
+@@ -0,0 +1,31 @@
++lockfileVersion: '9.0'
++
++settings:
++  autoInstallPeers: true
++  excludeLinksFromLockfile: false
++
++importers:
++
++  .:
++    dependencies:
++      ws:
++        specifier: ^8.18.0
++        version: 8.18.1
++
++packages:
++
++  ws@8.18.1:
++    resolution: {integrity: sha512-RKW2aJZMXeMxVpnZ6bck+RswznaxmzdULiBr6KY7XkTnW8uvt0iT9H5DkHUChXrc+uurzwa0rVI16n/Xzjdz1w==}
++    engines: {node: '>=10.0.0'}
++    peerDependencies:
++      bufferutil: ^4.0.1
++      utf-8-validate: '>=5.0.2'
++    peerDependenciesMeta:
++      bufferutil:
++        optional: true
++      utf-8-validate:
++        optional: true
++
++snapshots:
++
++  ws@8.18.1: {}
+diff --git a/script.js b/script.js
+index 974138b..f9160f1 100644
+--- a/script.js
++++ b/script.js
+@@ -1,4 +1,3 @@
+-
+ const signalingServer = new WebSocket('ws://localhost:3000');
+ let localStream;
+ let peerConnection;
+@@ -11,28 +10,36 @@ document.addEventListener('DOMContentLoaded', () => {
+     const callBtn = document.getElementById('call');
+     const state = document.getElementById('state');
+     const urID = document.getElementById('usrID');
+-    
++
+     registerBtn.addEventListener('click', () => {
+         register(userIdInput.value);
+-        state.textContent = "Registered";
+-        userIdInput.style.display = 'none';
+-        registerBtn.style.display = 'none';
+-        urID.textContent = `Your ID is: ${userIdInput.value}`;
+-
+     });
+ 
+-    callBtn.addEventListener('click', () => {
++    callBtn.addEventListener('click', async () => {
++        if (!localStream) {
++            await startCall();
++        }
+         callUser(targetIdInput.value);
+     });
+ });
+ 
+ function register(userId) {
++    if (!userId) {
++        alert("User ID cannot be empty");
++        return;
++    }
+     signalingServer.send(JSON.stringify({ type: 'register', userId }));
+ }
+ 
+ function callUser(targetId) {
++    if (!targetId) {
++        alert("Target ID cannot be empty");
++        return;
++    }
++    
+     peerConnection = new RTCPeerConnection(servers);
+     localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
++
+     peerConnection.onicecandidate = event => {
+         if (event.candidate) {
+             signalingServer.send(JSON.stringify({
+@@ -42,52 +49,97 @@ function callUser(targetId) {
+             }));
+         }
+     };
+-    peerConnection.createOffer().then(offer => {
+-        peerConnection.setLocalDescription(offer);
+-        signalingServer.send(JSON.stringify({ type: 'offer', targetId, offer }));
+-    });
++
++    peerConnection.ontrack = event => {
++        playRemoteAudio(event.streams[0]);
++    };
++
++    peerConnection.createOffer()
++        .then(offer => {
++            return peerConnection.setLocalDescription(offer);
++        })
++        .then(() => {
++            signalingServer.send(JSON.stringify({ type: 'offer', targetId, offer: peerConnection.localDescription }));
++        })
++        .catch(console.error);
+ }
+ 
+ signalingServer.onmessage = async (message) => {
+-    const data = JSON.parse(message.data);
+-    switch (data.type) {
+-        case 'incoming_call':
+-            acceptCall(data.from);
+-            break;
+-        case 'offer':
+-            peerConnection = new RTCPeerConnection(servers);
+-            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+-            peerConnection.onicecandidate = event => {
+-                if (event.candidate) {
+-                    signalingServer.send(JSON.stringify({
+-                        type: 'candidate',
+-                        targetId: data.userId,
+-                        candidate: event.candidate
+-                    }));
+-                }
+-            };
+-            peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+-            peerConnection.createAnswer().then(answer => {
+-                peerConnection.setLocalDescription(answer);
++    try {
++        const data = JSON.parse(message.data);
++        switch (data.type) {
++            case 'incoming_call':
++                if (!localStream) await startCall();
++                acceptCall(data.from);
++                break;
++            case 'offer':
++                if (!peerConnection) peerConnection = new RTCPeerConnection(servers);
++                
++                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
++
++                peerConnection.onicecandidate = event => {
++                    if (event.candidate) {
++                        signalingServer.send(JSON.stringify({
++                            type: 'candidate',
++                            targetId: data.userId,
++                            candidate: event.candidate
++                        }));
++                    }
++                };
++
++                peerConnection.ontrack = event => {
++                    console.log(event);
++                    if (event.streams && event.streams[0]) {
++                        playRemoteAudio(event.streams[0]);
++                    }
++                };
++
++                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
++                const answer = await peerConnection.createAnswer();
++                await peerConnection.setLocalDescription(answer);
++
+                 signalingServer.send(JSON.stringify({ type: 'answer', targetId: data.userId, answer }));
+-            });
+-            break;
+-        case 'answer':
+-            peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+-            break;
+-        case 'candidate':
+-            peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+-            break;
+-        case 'array':
+-            const urArray = document.getElementById('userArray');
+-            urArray.textContent = data.arr;
+-            console.log(data.arr);
++                break;
++            case 'answer':
++                if (peerConnection) {
++                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
++                }
++                break;
++            case 'candidate':
++                if (peerConnection) {
++                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
++                }
++                break;
++            case 'array':
++                document.getElementById('userArray').textContent = data.arr.join(', ');
++                break;
++        }
++    } catch (error) {
++        console.error("Error processing message:", error);
+     }
+ };
+ 
+ async function startCall() {
+-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+-    document.getElementById('startCall').disabled = true;
++    try {
++        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
++        document.getElementById('startCall').disabled = true;
++    } catch (error) {
++        console.error("Error accessing media devices:", error);
++    }
+ }
+ 
+ document.getElementById('startCall').addEventListener('click', startCall);
++
++function playRemoteAudio(stream) {
++    let audioElement = document.getElementById('remoteAudio');
++    if (!audioElement) {
++        audioElement = document.createElement('audio');
++        audioElement.id = 'remoteAudio';
++        audioElement.autoplay = true;
++        audioElement.controls = true; // Ensure audio playback controls are available
++        document.body.appendChild(audioElement);
++    }
++    audioElement.srcObject = stream;
++    audioElement.play().catch(error => console.error("Error playing audio:", error));
++}
++
+diff --git a/server.js b/server.js
+index 966f9ea..7aa2ede 100644
+--- a/server.js
++++ b/server.js
+@@ -1,44 +1,72 @@
+-
+ const WebSocket = require('ws');
+ const wss = new WebSocket.Server({ port: 3000 });
+ 
+-const users = {}; 
++const users = {};
+ 
+ wss.on('connection', (ws) => {
+     ws.on('message', (message) => {
+-        const data = JSON.parse(message);
+-        switch (data.type) {
+-            case 'register':
+-                users[data.userId] = ws;
+-                ws.userId = data.userId;
+-                users[data.userId].send(JSON.stringify({
+-                    type: 'array',
+-                    arr: users
+-                }))
+-                console.log(`User ${data.userId} registered.`);
+-                break;
+-            case 'call':
+-                if (users[data.targetId]) {
++        try {
++            const data = JSON.parse(message);
++            switch (data.type) {
++                case 'register':
++                    if (!data.userId || typeof data.userId !== 'string') {
++                        ws.send(JSON.stringify({ error: "Invalid user ID" }));
++                        return;
++                    }
++                    users[data.userId] = ws;
++                    ws.userId = data.userId;
++                    console.log(`User ${data.userId} registered. Current users:`, Object.keys(users));
++
++                    ws.send(JSON.stringify({ type: 'registered', userId: data.userId }));
++
++                    // Send updated user list
++                    const userList = Object.keys(users);
++                    Object.values(users).forEach(user => {
++                        user.send(JSON.stringify({ type: 'array', arr: userList }));
++                    });
++                    break;
++
++                case 'call':
++                    if (!users[data.targetId]) {
++                        console.error(`User ${data.targetId} not found. Available users:`, Object.keys(users));
++                        ws.send(JSON.stringify({ error: "User not found" }));
++                        return;
++                    }
+                     users[data.targetId].send(JSON.stringify({
+                         type: 'incoming_call',
+                         from: data.userId
+                     }));
+-                }
+-                break;
+-            case 'offer':
+-            case 'answer':
+-            case 'candidate':
+-                if (users[data.targetId]) {
+-                    users[data.targetId].send(JSON.stringify(data));
+-                }
+-                break;
++                    break;
++
++                case 'offer':
++                case 'answer':
++                case 'candidate':
++                    if (users[data.targetId]) {
++                        users[data.targetId].send(JSON.stringify(data));
++                    } else {
++                        ws.send(JSON.stringify({ error: "User not found" }));
++                    }
++                    break;
++
++                default:
++                    ws.send(JSON.stringify({ error: "Unknown message type" }));
++            }
++        } catch (error) {
++            console.error("Error processing message:", error);
++            ws.send(JSON.stringify({ error: "Invalid message format" }));
+         }
+     });
+-    
+-    ws.on('close', () => {
++
++     ws.on('close', () => {
+         if (ws.userId) {
+             delete users[ws.userId];
+             console.log(`User ${ws.userId} disconnected.`);
++
++            // Update user list for all connected clients
++            const userList = Object.keys(users);
++            Object.values(users).forEach(user => {
++                user.send(JSON.stringify({ type: 'array', arr: userList }));
++            });
+         }
+     });
+ });
