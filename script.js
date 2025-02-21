@@ -2,6 +2,7 @@ const signalingServer = new WebSocket('ws://localhost:3000');
 let localStream;
 let peerConnection;
 const servers = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+let candidateQueue = [];
 
 document.addEventListener('DOMContentLoaded', () => {
     const userIdInput = document.getElementById('userId');
@@ -38,7 +39,12 @@ function callUser(targetId) {
     }
     
     peerConnection = new RTCPeerConnection(servers);
-    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+    if (localStream) {
+        localStream.getTracks().forEach(track => {
+            console.log('Adding local track:', track);
+            peerConnection.addTrack(track, localStream);
+        });
+    }
 
     peerConnection.onicecandidate = event => {
         if (event.candidate) {
@@ -51,6 +57,7 @@ function callUser(targetId) {
     };
 
     peerConnection.ontrack = event => {
+        console.log('Received remote track:', event.streams[0]);
         playRemoteAudio(event.streams[0]);
     };
 
@@ -75,7 +82,12 @@ signalingServer.onmessage = async (message) => {
             case 'offer':
                 if (!peerConnection) peerConnection = new RTCPeerConnection(servers);
                 
-                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+                if (localStream) {
+                    localStream.getTracks().forEach(track => {
+                        console.log('Adding local track:', track);
+                        peerConnection.addTrack(track, localStream);
+                    });
+                }
 
                 peerConnection.onicecandidate = event => {
                     if (event.candidate) {
@@ -88,7 +100,7 @@ signalingServer.onmessage = async (message) => {
                 };
 
                 peerConnection.ontrack = event => {
-                    console.log(event);
+                    console.log('Received remote track:', event.streams[0]);
                     if (event.streams && event.streams[0]) {
                         playRemoteAudio(event.streams[0]);
                     }
@@ -99,6 +111,11 @@ signalingServer.onmessage = async (message) => {
                 await peerConnection.setLocalDescription(answer);
 
                 signalingServer.send(JSON.stringify({ type: 'answer', targetId: data.userId, answer }));
+
+                // Process queued candidates
+                while (candidateQueue.length) {
+                    await peerConnection.addIceCandidate(candidateQueue.shift());
+                }
                 break;
             case 'answer':
                 if (peerConnection) {
@@ -107,7 +124,11 @@ signalingServer.onmessage = async (message) => {
                 break;
             case 'candidate':
                 if (peerConnection) {
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    if (peerConnection.remoteDescription) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    } else {
+                        candidateQueue.push(new RTCIceCandidate(data.candidate));
+                    }
                 }
                 break;
             case 'array':
@@ -125,6 +146,7 @@ async function startCall() {
         document.getElementById('startCall').disabled = true;
     } catch (error) {
         console.error("Error accessing media devices:", error);
+        alert("Error accessing media devices: " + error.message + ". Please grant the necessary permissions and try again.");
     }
 }
 
@@ -139,6 +161,7 @@ function playRemoteAudio(stream) {
         audioElement.controls = true; // Ensure audio playback controls are available
         document.body.appendChild(audioElement);
     }
+    console.log('Playing remote audio stream:', stream);
     audioElement.srcObject = stream;
     audioElement.play().catch(error => console.error("Error playing audio:", error));
 }
